@@ -1,0 +1,27 @@
+package com.yb.wealth.care.expense;
+
+import jakarta.enterprise.context.ApplicationScoped;
+import lombok.Getter;
+import org.apache.kafka.common.TopicPartition;
+
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.List;
+
+@Getter
+@ApplicationScoped
+public class PartitionAssignmentState {
+    private final List<TopicPartition> assignedPartitions = new ArrayList<>();
+    private int assignedPartitionsCount = 0;
+
+    public synchronized void addAssignedPartitions(Collection<TopicPartition> topicPartitions) {
+        assignedPartitions.addAll(topicPartitions);
+        assignedPartitionsCount = assignedPartitionsCount + topicPartitions.size();
+    }
+
+    public synchronized void removeAssignedPartition(TopicPartition topicPartition) {
+        assignedPartitions.removeIf(i -> i.partition() == topicPartition.partition());
+        assignedPartitionsCount--;
+    }
+
+}
