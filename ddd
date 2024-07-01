@@ -1,0 +1,137 @@
+package com.yb.wealth.care.expense;
+
+import io.smallrye.common.annotation.Identifier;
+import io.smallrye.reactive.messaging.kafka.KafkaConsumerRebalanceListener;
+import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.inject.Inject;
+import lombok.extern.slf4j.Slf4j;
+import org.apache.camel.CamelContext;
+import org.apache.camel.builder.RouteBuilder;
+import org.apache.kafka.clients.consumer.Consumer;
+import org.apache.kafka.common.TopicPartition;
+
+import java.util.Collection;
+import java.util.HashMap;
+import java.util.Map;
+
+@ApplicationScoped
+@Identifier("myRebalanceListener")
+@Slf4j
+public class MyRebalanceListener implements KafkaConsumerRebalanceListener {
+    private final Map<Integer, String> partitionToEndpointMapConfig;
+    @Inject
+    CamelContext camelContext;
+    @Inject
+    PartitionAssignmentState partitionAssignmentState;
+
+
+    @Inject
+    public MyRebalanceListener() {
+        // to get  from config
+        partitionToEndpointMapConfig = new HashMap<>();
+        partitionToEndpointMapConfig.put(1, "kafka:processed-topic-1");
+        partitionToEndpointMapConfig.put(2, "kafka:processed-topic-2");
+    }
+
+    @Override
+    public void onPartitionsRevoked(Consumer<?, ?> consumer, Collection<TopicPartition> partitions) {
+        KafkaConsumerRebalanceListener.super.onPartitionsRevoked(consumer, partitions);
+        partitions.forEach(partition -> {
+            partitionAssignmentState.removeAssignedPartition(partition);
+        });
+        handleRebalanceOfRoutes();
+    }
+
+    @Override
+    public void onPartitionsAssigned(Consumer<?, ?> consumer, Collection<TopicPartition> partitions) {
+        KafkaConsumerRebalanceListener.super.onPartitionsAssigned(consumer, partitions);
+        partitionAssignmentState.addAssignedPartitions(partitions);
+        handleRebalanceOfRoutes();
+    }
+
+    @Override
+    public void onPartitionsLost(Consumer<?, ?> consumer, Collection<TopicPartition> partitions) {
+        KafkaConsumerRebalanceListener.super.onPartitionsLost(consumer, partitions);
+        partitions.forEach(partition -> {
+            partitionAssignmentState.removeAssignedPartition(partition);
+            removeCamelRouteForPartition(partition.partition());
+        });
+        handleRebalanceOfRoutes();
+    }
+
+    private void handleRebalanceOfRoutes() {
+        if (partitionAssignmentState.getAssignedPartitionsCount() == 1 && camelContext.getRoutes().isEmpty()) {
+            addRoutes();
+        } else {
+            removeAllCamelRoutes();
+            addRoutes();
+        }
+    }
+
+    private void removeAllCamelRoutes() {
+        try {
+            camelContext.getRouteController().stopAllRoutes();
+            camelContext.getRouteController().removeAllRoutes();
+        } catch (Exception e) {
+            log.error("Failed to remove all camel routes", e);
+        }
+    }
+
+    private void removeCamelRouteForPartition(int partition) {
+        String routeName = getRouteId(partition);
+        try {
+            camelContext.getRouteController().stopRoute(routeName);
+            camelContext.removeRoute(routeName);
+        } catch (Exception e) {
+           log.error("Error: " + e.getMessage());
+        }
+    }
+
+    private void addRoutes()  {
+        try {
+            if (partitionAssignmentState.getAssignedPartitionsCount() == 1) {
+                int partition = partitionAssignmentState.getAssignedPartitions().getFirst().partition();
+                camelContext.addRoutes(new RouteBuilder() {
+                    @Override
+                    public void configure() {
+                        from("direct:expense")
+                                .routeId(getRouteId(partition))
+                                .log("Processing message for partition " + partition + ": ${body}")
+                                .to(getEndpoint(partition));
+                    }
+                });
+            } else {
+                partitionAssignmentState.getAssignedPartitions().forEach(partition -> createCamelRouteForPartition(partition.partition()));
+            }
+        } catch (Exception e) {
+            log.error("Error: " + e.getMessage());
+        }
+    }
+
+    private void createCamelRouteForPartition(int partition) {
+        String endpoint = getEndpoint(partition);
+        log.info("Starting Camel route for " + endpoint);
+        try {
+            camelContext.addRoutes(new RouteBuilder() {
+                @Override
+                public void configure() {
+                    from("direct:expense-" + partition)
+                            .routeId(getRouteId(partition))
+                            .log("Processing message for partition " + partition + ": ${body}")
+                            .to(getEndpoint(partition));
+                }
+            });
+        } catch (Exception e) {
+            log.error("Error: " + e.getMessage());
+        }
+    }
+
+    private String getRouteId(int partition) {
+        return  "route-" + (partition+1);
+    }
+
+    private String getEndpoint(int partition) {
+        log.info("getEndpoint: " + partition+1);
+        return partitionToEndpointMapConfig.get(partition+1) + "?brokers=localhost:29092";
+    }
+}
