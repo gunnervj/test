@@ -1,0 +1,47 @@
+package com.yb.wealth.care.expense;
+
+import io.smallrye.reactive.messaging.kafka.api.IncomingKafkaRecordMetadata;
+import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.inject.Inject;
+import org.apache.camel.ProducerTemplate;
+import org.eclipse.microprofile.reactive.messaging.Incoming;
+import org.eclipse.microprofile.reactive.messaging.Message;
+import org.jboss.logging.Logger;
+
+import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
+import java.util.concurrent.atomic.AtomicInteger;
+
+
+@ApplicationScoped
+public class ExpenseConsumer {
+    private static final Logger LOGGER = Logger.getLogger(ExpenseConsumer.class);
+    @Inject
+    ProducerTemplate producerTemplate;
+    @Inject
+    PartitionAssignmentState partitionAssignmentState;
+
+    @Incoming("incoming-channel")
+    public CompletionStage<Void> consume(Message<String> record) {
+        LOGGER.info("Received expense: " + record.getPayload());
+        if (partitionAssignmentState.getAssignedPartitionsCount() == 1) {
+            producerTemplate.sendBody("direct:expense", record.getPayload());
+        } else  {
+            int partition = determinePartition(record);
+            LOGGER.info("Received partition: " + partition);
+            producerTemplate.sendBody("direct:expense-"+partition, record.getPayload());
+        }
+        return CompletableFuture.completedFuture(null);
+    }
+
+    private int determinePartition(Message<String> record) {
+        AtomicInteger partition = new AtomicInteger();
+        Optional<IncomingKafkaRecordMetadata> metadata = record.getMetadata(IncomingKafkaRecordMetadata.class);
+        metadata.ifPresent(meta -> {
+            partition.set(meta.getPartition());
+        });
+
+        return partition.get();
+    }
+}
